@@ -1,0 +1,36 @@
+# Conda spec for the fingerprint rules (R / Seurat). Copied verbatim from the
+# proven src/context/fingerprint/fingerprint.yaml. The conda-installable R deps
+# live here; the GitHub/Bioconductor-only packages (rna-fingerprinting + data,
+# SeuratDisk, presto, org.Hs.eg.db, rhdf5) are installed by the companion
+# fingerprint.post-deploy.sh, which Snakemake runs once after building this env.
+name: fingerprint
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - r-base=4.4.0
+  # Pin the Seurat stack to the proven working env's versions. Unpinned, conda
+  # resolved SeuratObject 5.4.0, which made PackageCheck() defunct and broke
+  # as.Seurat.SingleCellExperiment(); 5.2.0 keeps it functional.
+  - r-seurat=5.1.0
+  - r-seuratobject=5.2.0
+  - r-matrix
+  - r-pma
+  - r-protoclust
+  - r-argparse
+  - r-devtools
+  - r-remotes
+  - r-biocmanager
+  - r-igraph
+  - r-foreach
+  - r-doparallel
+  - r-dosnow
+  - r-svglite
+  - bioconductor-glmgampoi
+  - bioconductor-singlecellexperiment
+  - bioconductor-zellkonverter
+  - zlib
+  - hdf5
+  - pkg-config
+  - xz

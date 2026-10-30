@@ -1,0 +1,42 @@
+# scGPT perturbation-prediction config — `full` split.
+#
+# Same schema as small.yaml (see comments there). Differences are scale: more
+# GPU memory, a 48h wall clock with a matching eval deadline, and optional caps
+# to bound the cost of evaluating the much larger ood_test split.
+data:
+  ctrl_h5ad: null          # set by the pipeline (config ctrl_h5ad; padded copy auto-detected)
+  pretrained_model: null   # set by the pipeline (config scgpt_pretrained_model)
+
+model:
+  max_seq_len: 1536
+  embsize: 512
+  d_hid: 512
+  nlayers: 12
+  nhead: 8
+  n_layers_cls: 3
+  dropout: 0.0
+  use_fast_transformer: true
+
+training:
+  max_epochs: 15
+  batch_size: 64
+  early_stopping_patience: 10
+  learning_rate: 1.0e-4
+  train_steps_per_epoch: 500
+  min_train_cells_per_perturbation: 25
+  amp: true
+
+prediction:
+  metric: cosine
+  eval_splits: [id_test, ood_test]
+  # Bound eval cost on the large split (optional; omit/0 to evaluate all cells).
+  # Each test cell requires a forward pass per candidate perturbation, so the
+  # full ood_test split can be very expensive.
+  max_eval_cells_per_split: 0
+  max_control_cells_per_group: 0
+
+slurm:
+  train_mem: 600GB
+  train_time: "48:00:00"
+  deadline_hours: 47.0
+  deadline_buffer_minutes: 30

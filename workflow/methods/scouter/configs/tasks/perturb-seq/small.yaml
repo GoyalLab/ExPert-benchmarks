@@ -1,0 +1,29 @@
+# Task config for the `small` size. train.py / predict.py resolve source_h5ad
+# from metadata.json's source_path unless source_h5ad is set here.
+data:
+  ctrl_h5ad: null        # set by the pipeline: --ctrl-h5ad <config ctrl_h5ad>
+  embedding_path: null   # set by the pipeline: --genept-path <config scouter_gene_embeddings>
+  condition_col: perturbation
+  ctrl_label: control
+
+training:
+  # Larger batch amortizes Scouter's per-batch CPU overhead (the per-batch
+  # full-adata barcode re-slice + the per-condition Python loop in gears_loss),
+  # which dominates wall-clock on this tiny model — not GPU compute. Measured:
+  # s/batch is flat from 256→1024 (pure overhead), so epoch time scales ~1/batch
+  # _size. Probe higher by watching batch/s — bump while it stays flat.
+  batch_size: 2048
+  epochs: 40
+  patience: 3
+  learning_rate: 1.0e-3
+
+prediction:
+  n_pred: 300
+  seed: 24
+
+# SLURM resources for the GPU training job (.train.sh), read by .pipeline.sh.
+# Scouter densifies the full cell×gene matrix into RAM during .train(), so peak
+# memory scales with split size (backed loading bounds only the read, not
+# training). Overrides .train.sh's built-in #SBATCH --mem default.
+slurm:
+  train_mem: 120GB

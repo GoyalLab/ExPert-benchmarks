@@ -1,0 +1,19 @@
+# Conda spec for the collect rule (collect_results.py): the cross-method scorer.
+# Uses conda-forge packages (not pip) for the parquet/plotting/sklearn stack —
+# more robust than pip on the cluster (a flaky pip download kept truncating).
+name: collect
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - anndata
+  - h5py
+  - numpy
+  - pandas
+  - pyarrow
+  - scipy
+  - scikit-learn
+  - matplotlib-base
+  - seaborn        # collect_results.py boxen/bar plots
+  - statsmodels    # analysis suite (axis regressions / lowess)
+  - tabulate       # analysis suite (REPORT.md markdown tables)

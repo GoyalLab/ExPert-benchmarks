@@ -1,0 +1,51 @@
+# scGPT perturbation-prediction config — `small` split.
+#
+# Consumed by src/context/scgpt/.train.sh, which reads these keys via a small
+# YAML helper and builds the scgpt_perturb.py CLI. The perturbed *source* h5ad
+# is taken from the fold's metadata.json (`source_path`) — only the control
+# h5ad and the pretrained checkpoint are named here. The OOD generalization
+# axis (`context_col`, e.g. "dataset") and the held-out groups are likewise
+# read from metadata.json / inferred from the ood_test split, so they are not
+# repeated here.
+data:
+  ctrl_h5ad: null          # set by the pipeline (config ctrl_h5ad; padded copy auto-detected)
+  # Pretrained scGPT_human checkpoint dir (best_model.pt + vocab.json + args.json),
+  # placed by .setup.sh. Leave empty ("") to train from random init instead of
+  # fine-tuning — only matching-shape params are loaded, so this is safe.
+  pretrained_model: null   # set by the pipeline (config scgpt_pretrained_model)
+
+model:
+  max_seq_len: 1536
+  embsize: 512
+  d_hid: 512
+  nlayers: 12
+  nhead: 8
+  n_layers_cls: 3
+  dropout: 0.0
+  use_fast_transformer: true
+
+training:
+  max_epochs: 15
+  batch_size: 64
+  early_stopping_patience: 10
+  learning_rate: 1.0e-4
+  train_steps_per_epoch: 500
+  # Candidate perturbations (the classification label space) are those with at
+  # least this many training cells.
+  min_train_cells_per_perturbation: 25
+  amp: true
+
+prediction:
+  # How a predicted transcriptome is scored against each candidate's train
+  # centroid: "cosine" or "euclidean" (negative L2). Higher = better match.
+  metric: cosine
+  eval_splits: [id_test, ood_test]
+
+slurm:
+  # Combined GPU train+eval job (.train.sh) — sized for `small`.
+  train_mem: 200GB
+  train_time: "16:00:00"
+  # Stop evaluation this many hours into the job so logits.h5 is flushed before
+  # SLURM kills the allocation at train_time. Keep a margin below train_time.
+  deadline_hours: 15.5
+  deadline_buffer_minutes: 20

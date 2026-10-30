@@ -1,0 +1,26 @@
+# Task config for the `full` size. Same defaults as small for now — bump
+# batch_size and epochs if you've got the GPU memory.
+data:
+  ctrl_h5ad: null        # set by the pipeline: --ctrl-h5ad <config ctrl_h5ad>
+  embedding_path: null   # set by the pipeline: --genept-path <config scouter_gene_embeddings>
+  condition_col: perturbation
+  ctrl_label: control
+
+training:
+  # See small.yaml: larger batch amortizes Scouter's per-batch CPU overhead,
+  # which is the wall-clock bottleneck (not GPU compute).
+  batch_size: 2048
+  epochs: 40
+  patience: 3
+  learning_rate: 1.0e-3
+
+prediction:
+  n_pred: 300
+  seed: 24
+
+# SLURM resources for the GPU training job (.train.sh), read by .pipeline.sh.
+# Scouter densifies the full cell×gene matrix into RAM during .train(), so peak
+# memory scales with split size (backed loading bounds only the read, not
+# training). Overrides .train.sh's built-in #SBATCH --mem default.
+slurm:
+  train_mem: 400GB

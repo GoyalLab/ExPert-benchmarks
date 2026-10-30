@@ -1,0 +1,46 @@
+# ExPert-benchmarks — Snakemake entry point.
+#
+#   mamba activate ExPert
+#   snakemake -n --configfile config/config.yaml                       # dry run
+#   snakemake --profile profiles/slurm --configfile config/config.yaml # submit
+#
+# Leaf targets are results/<method>/perturb-seq/<size>/<fold>/<split>/logits.h5;
+# `rule all` rolls those up into per-size collect metrics.
+configfile: "config/config.yaml"
+
+
+include: "rules/common.smk"
+include: "rules/scouter.smk"
+include: "rules/scgpt.smk"
+include: "rules/fingerprint.smk"
+include: "rules/cellot.smk"
+include: "rules/gears.smk"
+include: "rules/genepert.smk"
+include: "rules/baselines.smk"
+include: "rules/classifiers.smk"
+include: "rules/expert.smk"
+include: "rules/padding.smk"
+include: "rules/collect.smk"
+
+
+# Auto compute-cost accounting: stamp the run start, and on completion (success OR
+# failure) aggregate per-method CPU/GPU-hours + RAM from SLURM's own per-job records
+# (sacct) into metrics/slurm_costs.csv. So every run emits its resource cost next to
+# the accuracy — no per-rule instrumentation needed (SLURM already tracks each job).
+onstart:
+    shell("mkdir -p metrics && date +%Y-%m-%dT%H:%M:%S > metrics/.run_start")
+
+onsuccess:
+    shell("python3 {workflow.basedir}/../utils/slurm_costs.py "
+          "--since $(cat metrics/.run_start 2>/dev/null || echo 2000-01-01) "
+          "--merge --out metrics/slurm_costs.csv 2>/dev/null || true")
+
+onerror:
+    shell("python3 {workflow.basedir}/../utils/slurm_costs.py "
+          "--since $(cat metrics/.run_start 2>/dev/null || echo 2000-01-01) "
+          "--merge --out metrics/slurm_costs.csv 2>/dev/null || true")
+
+
+rule all:
+    input:
+        [metrics_dir(size) for size in config["sizes"]],

@@ -1,0 +1,15 @@
+# Config overlay for run.sh:  SUBSET=config/model_subset.yaml sbatch run.sh
+#
+# Runs the REAL pipeline (rule all → metrics/<size> via the collect rollup) for a
+# SUBSET of methods/folds on `full`, instead of passing clunky explicit leaf targets.
+# Layered after config.yaml (later --configfile wins), so it overrides only these
+# keys; everything else (chunk counts, paths, resources) comes from config.yaml.
+# Edit the lists to change the batch, then: SUBSET=config/model_subset.yaml sbatch run.sh
+sizes: [full]
+folds_by_size:                 # only fold_0 of full (not all 6) — see folds_for_size()
+  full: [fold_2]
+methods: [baselines, genepert, fingerprint_merged]
+method_splits:
+  baselines:          [id_test, ood_test]
+  genepert:           [id_test, ood_test]
+  fingerprint_merged: [id_test, ood_test]

@@ -1,0 +1,19 @@
+# Runtime deps for scgpt_perturb.py + the vendored scGPT/ package (used via
+# sys.path, NOT pip-installed — so scGPT's own heavy/pinned deps like
+# torchtext + scvi-tools are deliberately NOT pulled in; the vendored package's
+# vocab_compat shim makes torchtext optional and flash-attn is auto-skipped).
+# Versions mirror the known-good scgpt_env the prelim ran on.
+#
+# torch 2.5.1 from PyPI bundles its own CUDA 12.4 libs; do NOT `module load cuda`
+# in .train.sh (same footgun scouter documents).
+torch==2.5.1
+torch_geometric==2.7.0
+anndata==0.11.1
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.14.1
+h5py==3.12.1
+matplotlib
+tqdm
+pyyaml==6.0.2
+typing_extensions

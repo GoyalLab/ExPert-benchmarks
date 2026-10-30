@@ -1,0 +1,31 @@
+# Base environment for DRIVING the pipeline: building the Snakemake DAG and
+# submitting jobs through the legacy SLURM profile (profiles/slurm). This is the
+# env you `activate` before running `snakemake ...`.
+#
+# It is deliberately minimal. The heavy per-method tool stacks (torch+cuda, R,
+# scgpt, gears, ...) are NOT here — Snakemake builds those on demand from
+# workflow/envs/*.yaml when you pass --use-conda.
+#
+# Installed as a PREFIX env inside the repo (.conda-envs/, git-ignored), which
+# keeps it off a home quota. Create + use, on a compute node if your login nodes
+# cap memory (solves can exceed 6GB):
+#
+#   mamba env create -f environment.yaml -p .conda-envs/expert-bench
+#   mamba activate .conda-envs/expert-bench
+#   snakemake -n metrics/small --configfile config/config.yaml
+#
+# (No `name:` key — a prefix install (`-p`) conflicts with a named env.)
+# Env creation for the tool envs relies on a `mamba` on PATH (profile sets
+# conda-frontend: mamba); the base mamba you used to create this env covers that.
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - snakemake-minimal=7.32.4   # legacy 7.x profile (NOT the v8 executor-plugin style)
+  - pulp<2.8                   # snakemake 7.x's scheduler breaks on pulp>=2.8
+  # parse-time imports done while building the DAG
+  # (workflow/rules/common.smk + workflow/scripts/workflow_utils.py):
+  - pandas
+  - numpy
+  - pyyaml

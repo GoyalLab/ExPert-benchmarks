@@ -1,0 +1,18 @@
+# Conda spec for the supervised discriminative baselines (xgboost, linreg):
+# workflow/methods/classifiers/run_classifier.py. conda-forge only (pip downloads
+# have truncated on the cluster before). xgboost pinned to the version the original
+# ExPert/expert/benchmarks/xgboost.py ran on (pydl: 2.1.4); CPU build, since
+# these rules run on CPU nodes.
+name: classifiers
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - anndata
+  - scanpy
+  - h5py
+  - py-xgboost-cpu=2.1.4

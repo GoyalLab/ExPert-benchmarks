@@ -1,0 +1,22 @@
+# Conda spec for the scouter rules' env. Kept in sync with
+# workflow/methods/scouter/requirements.txt. Phase 1 builds .conda/scouter from
+# the requirements via .setup.sh; this file is the source of truth for phase-4
+# `--use-conda`.
+name: scouter
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - scouter-learn
+      - torch==2.5.1
+      - anndata
+      - scanpy
+      - h5py
+      - pyyaml
+      - scipy
+      - scikit-learn
+      - numpy
+      - pandas
+      - tqdm

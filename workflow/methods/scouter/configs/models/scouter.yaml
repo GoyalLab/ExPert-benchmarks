@@ -1,0 +1,15 @@
+# Scouter architecture + loss + optim. Defaults match the prelim run.py.
+model:
+  n_encoder: [2048, 512]
+  n_out_encoder: 64
+  n_decoder: [2048]
+  dropout_rate: 0.0
+  use_batch_norm: true
+  use_layer_norm: false
+
+loss:
+  loss_gamma: 0.0
+  loss_lambda: 0.5
+
+optim:
+  sched_gamma: 0.9

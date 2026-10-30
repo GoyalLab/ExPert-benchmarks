@@ -1,0 +1,652 @@
+# Per-rule SLURM resources. Consumed by workflow/rules/common.smk, which turns
+# these into Snakemake `resources:` (time/mem/partition + a `slurm=` passthrough
+# string for account/gres/constraint, since the legacy profile's RESOURCE_MAPPING
+# has no account key).
+#
+# `partition:` names a LOGICAL class, not a real partition. config/site.yaml maps
+# each class to this cluster's partition + account (+ optional node constraint);
+# see config/site.example.yaml. Classes used below:
+#   cpu                standard CPU nodes (~190-515GB)
+#   cpu_himem          high-memory CPU nodes (~1-2TB)
+#   cpu_long           CPU, multi-day walltime (pipeline controller)
+#   cpu_short          CPU, short walltime (<=4h), large shared pool
+#   cpu_general        CPU, general/shared pool
+#   cpu_himem_general  high-memory CPU, general/shared pool
+#   gpu                GPU nodes (scGPT)
+#   gpu_general        GPU nodes, general/shared pool (GEARS, scouter)
+#   gpu_bigmem         GPU nodes with ~500GB host RAM
+# Memory/time values were measured on the cluster this was developed on; the
+# comments record those measurements.
+
+# For the estimate_resources() file-size→mem helper (phase 3 dynamic sizing).
+memory:
+  min_mem: 50
+  max_mem: 220
+
+jobs:
+  scouter_train:
+    time: "08:00:00"
+    mem: "100GB"
+    threads: 8
+    partition: gpu_general
+    gpu: 1
+  scouter_eval:
+    time: "04:00:00"
+    mem: "120GB"
+    threads: 40
+    partition: cpu
+  scouter_train_pds:     # per-dataset train (D's cells only). CPU: these are tiny
+    time: "12:00:00"     # models (GPU median 5.4 min over 17 jobs) and there are
+    mem: "48GB"          # 12 folds x ~19 datasets = 230 of them, which saturated
+    threads: 16          # gpu_general and stalled the whole DAG behind (Priority).
+    partition: cpu  # cpu has far more capacity; Scouter(device="auto")
+  scouter_ens_eval:      # CPU: score all cells vs every dataset's fingerprints
+    time: "08:00:00"     # (chunked, streams backed source) — mirrors genepert/gears.
+    mem: "48GB"
+    threads: 8
+    partition: cpu
+  scgpt_train:           # GPU fine-tune + cache best_model.pt (no eval)
+    time: "12:00:00"
+    mem: "140GB"
+    threads: 8
+    partition: gpu
+    gpu: 1
+  scgpt_eval_chunk:      # GPU: predict one pert-chunk of one split (parallel)
+    time: "08:00:00"
+    mem: "96GB"
+    threads: 8
+    partition: gpu
+    gpu: 1
+  scgpt_concat:          # CPU: hstack pert-chunk logits → final logits.h5
+    time: "02:00:00"
+    mem: "32GB"
+    threads: 4
+    partition: cpu
+  baselines:
+    time: "06:00:00"
+    mem: "80GB"
+    threads: 8
+    partition: cpu
+  collect:                # loads EVERY method's logits to score them. Raised (not
+    time: "01:00:00"      # lowered): logit width is #perts (200, gene-count independent)
+    mem: "64GB"           # and 12 folds x 8 methods is ~2x the files of the old 6-fold run.
+    threads: 4
+    partition: cpu
+  # ---- fingerprint (R/Seurat) -------------------------------------------------
+  fp_prep:               # realize + SCT training cells (--skip_deg). Singleton
+    time: "08:00:00"     # → himem at full (jobs_by_size). small = base cpu.
+    mem: "200GB"
+    threads: 8
+    partition: cpu
+  fp_deg_chunk:          # DEGs (FindMarkers) for one pert-slice off train_obj
+    time: "08:00:00"
+    mem: "100GB"
+    threads: 4
+    partition: cpu
+  fp_concat_deg:         # union deg_chunks → features.rds (cheap)
+    time: "01:00:00"
+    mem: "32GB"
+    threads: 2
+    partition: cpu
+  fp_fit_chunk:          # fit one dictionary slice
+    time: "04:00:00"
+    mem: "85GB"
+    threads: 8
+    partition: cpu
+  fp_concat_dict:        # cbind dict_chunks → dict.rds (cheap)
+    time: "01:00:00"
+    mem: "32GB"
+    threads: 4
+    partition: cpu
+  fp_eval_chunk:         # score one eval-split slice — the OOM-prone step
+    time: "08:00:00"
+    mem: "200GB"
+    threads: 8
+    partition: cpu
+  fp_concat_eval:        # concat eval chunks → logits.h5 + report.csv
+    time: "02:00:00"
+    mem: "150GB"
+    threads: 8
+    partition: cpu
+  # ---- per-dataset fingerprint: one model per dataset -> ensemble scoring ------
+  # Each job touches ONE dataset (≤1.46M cells @ full = ~1/8 the fold) or scores a
+  # cell-chunk against all dicts one-at-a-time, so these are far smaller than the
+  # shared-path jobs and stay on cpu (never himem). full overrides below.
+  fp_pds_prep:           # SCT on one dataset's train subsample
+    time: "04:00:00"
+    mem: "24GB"
+    threads: 8
+    partition: cpu
+  fp_pds_deg_chunk:      # DEGs for one pert-slice of one dataset
+    time: "06:00:00"
+    mem: "24GB"
+    threads: 4
+    partition: cpu
+  fp_pds_concat_deg:     # union partial DEGs (MEASURED ~1GB; was 24GB @ 4%)
+    time: "01:00:00"
+    mem: "8GB"
+    threads: 2
+    partition: cpu
+  fp_pds_fit_chunk:      # fit one dict-slice of one dataset
+    time: "04:00:00"
+    mem: "24GB"
+    threads: 8
+    partition: cpu
+  fp_pds_concat_dict:    # cbind dict slices (MEASURED ~1GB; was 24GB @ 4%)
+    time: "01:00:00"
+    mem: "8GB"
+    threads: 2
+    partition: cpu
+  fp_ens_eval_chunk:     # LEGACY single-job loop: one cell-chunk vs EVERY dict.
+    time: "08:00:00"     # Superseded by the per-dataset fan-out (fp_ens_eval_ds_chunk);
+    mem: "64GB"          # kept for the opt-in loop mode (ensemble_eval.R w/o --dataset).
+    threads: 8
+    partition: cpu
+  fp_ens_eval_ds_chunk:  # FAN-OUT: one cell-chunk vs ONE dataset's dict (realize +
+    time: "06:00:00"     # SCT + susie query, controls capped at 2k/dataset).
+    mem: "96GB"          # RESIZED for the all-genes SCT fix: dicts went from ~480 to
+    threads: 8           # 1706-2840 genes (median 480 -> 2354, 4.9x), and this rule's
+    partition: cpu  # peak scales with the dict's gene dimension. 1839/1840 fit in
+    #                      at MaxRSS 62.5GB -- so the true requirement is ABOVE 62.5G,
+    #                      not equal to it, and 64GB has no headroom. 96GB re-measures
+    #                      clean; trim once a full pass reports real peaks.
+  fp_ens_concat:         # combine per-dataset probs → logits.h5 (small pert space)
+    time: "02:00:00"     # MEASURED small peak ~3GB (was 48GB @ 6%). full holds the
+    mem: "16GB"          # big (cells x ~9k-pert) matrix — full override below.
+    threads: 4
+    partition: cpu
+  fp_merge_eval_chunk:   # score one cell-chunk vs the merged dict.
+    time: "06:00:00"     # MOVED off `cpu_short`: that is the cluster's general pool and had
+    mem: "96GB"          # 52,906 jobs pending, so all 192 chunks sat in (Priority)
+    threads: 8           # indefinitely while every other rule ran fine on the dedicated
+    partition: cpu  # `cpu` nodes. cpu also lifts cpu_short's 4h cap, which merged
+    #                      merge_eval loads ALL 18 per-dataset dicts to build the union
+    #                      dict, now 3012 genes x 200 perts after the all-genes fix.
+  fp_merge_concat:       # rbind cell-chunks -> logits.h5. small tiny; full assembles
+    time: "01:00:00"     # the big (cells x ~9k-pert) matrix -> full override below.
+    mem: "32GB"
+    threads: 4
+    partition: cpu
+  # ---- cellot (Python OT, CPU) ------------------------------------------------
+  cellot_perts:          # list per-fold perturbations (light, backed h5ad read)
+    time: "00:30:00"
+    mem: "16GB"
+    threads: 2
+    partition: cpu
+  cellot_ae:             # scgen autoencoder, one per (fold, dataset)
+    time: "12:00:00"     # MEASURED small peak ~10GB (was 100GB @ 11%) — AE on one
+    mem: "24GB"          # dataset's controls is tiny. full override below.
+    threads: 40
+    partition: cpu
+  cellot_pert:           # one OT model per perturbation (the fan-out)
+    time: "08:00:00"
+    mem: "32GB"
+    threads: 8
+    partition: cpu
+  cellot_pert_chunk:     # K per-pert OT fits SEQUENTIALLY (per-dataset fan-out).
+    time: "04:00:00"     # K=25/chunk @ ~4min/fit ≈ 1.8h; 4h gives margin for slow
+    mem: "24GB"          # perts. MEASURED small peak ~11.5GB; 24GB = 2x. Finer
+    threads: 8           # chunks shrink the wall-clock tail; mem flat (one at a time).
+    partition: cpu
+  cellot_eval:           # score one split vs all per-pert models (cellot_ens_eval).
+    time: "04:00:00"     # MEASURED small peak ~17GB (was 120GB @ 14%). full override
+    mem: "32GB"          # below (streams the backed source, so stays modest).
+    threads: 40
+    partition: cpu
+  # ---- gears (GNN) ------------------------------------------------------------
+  gears_prep:            # CPU: build D's per-cell graph cache (per size+dataset).
+    time: "08:00:00"     # MEASURED small peak ~30GB (was 128GB @ 24% — per-dataset
+    mem: "64GB"       # MEASURED ctx7 peak 35.2GB vs a 36GB request (97%) --          # is ~1/17 the old global build). full override below.
+    threads: 16
+    partition: cpu
+  gears:                 # per-dataset GNN train. Moved off gpu_general for the same
+    time: "12:00:00"     # reason as scouter_train_pds: 230 jobs (12 folds x ~19
+    mem: "64GB"          # datasets), GPU median only 24.5 min, and they were
+    threads: 16          # queue-blocking every other GPU rule. run_GEARS.py now
+    partition: cpu  # auto-detects the device instead of hardcoding cuda.
+  gears_ens_eval:        # CPU: score all cells vs every dataset's fingerprints
+    time: "08:00:00"     # (chunked, streams backed source) — mirrors genepert
+    mem: "48GB"          # (small ~49GB). full override below.
+    threads: 8
+    partition: cpu
+  # ---- genepert (ridge over gene embeddings, CPU) -----------------------------
+  genepert:              # one CPU job per fold (fit id_train means, score both splits)
+    time: "08:00:00"     # backed source.h5ad: loads id/ood test cells + per-pert
+    mem: "48GB"          # means. MEASURED small peak ~49GB (was 128GB). full override
+    threads: 8           # below (cpu_long + 128GB for the 112GB backed source).
+    partition: cpu
+  expert_logits:         # score a trained ExPert model over the benchmark's cells.
+    time: "01:00:00"     # MEASURED 2026-09-30 with --no-model-adata (fold_0, 8 cores):
+    mem: "32GB"          # small 10m19s / 20.3GB, ctx7 11m01s / 20.6GB. Was 200GB: the
+    threads: 8           # old path read the FULL DB unbacked (157GB) just to register
+    partition: cpu  # it; now only its obs names are read (leak split), predict()
+
+  # ---- padding mode (padding.smk; docs/padding_scope.md) ---------------------
+  # Sizing notes. The eval arms are SMALL (zs_id 201k cells at cap 20, zs_ood 9.7k)
+  # but very WIDE (10,245 classes), so the pole is the logits matrix, not the cells:
+  # one zs_id logits.h5 is ~8.2 GB on disk and the scorers hold a (chunk x 10,245)
+  # float64 accumulator. TRAINING reads the 140GB `full` store backed/streamed.
+  zs_splits:             # reads the training store's label column once (19.5M
+    time: "04:00:00"     # variable-length strings ~1.4GB) + the zs store's obs, then
+    mem: "16GB"        # MEASURED peak 3.8GB          # writes indices. Single job, himem to be safe.
+    threads: 4
+    partition: cpu
+  expert_atoms:          # torch.load(mmap) of a 2GB checkpoint + one 19,895 x 2,048
+    time: "01:00:00"     # tensor; the 40-row order verification does a
+    mem: "8GB"        # MEASURED peak 2.2GB          # (40 x 4096) @ (4096 x 19,895) matmul. Trivial.
+    threads: 4
+    partition: cpu
+  expert_zs:             # --no-model-adata: the 157GB unbacked training-store read is
+    time: "06:00:00"     # gone, so this now holds only the ~108k scored query cells
+    mem: "64GB"          # plus the 19,895 x 2,048 anchor table. Was 220GB (sized for
+    threads: 8           # the old expert_logits shape); measured peak of the failing
+    partition: cpu  # runs was 9.7GB before they aborted at load.
+  genepert_zs:           # per-dataset ridge over streamed per-pert means from the
+    time: "4-00:00:00"   # UNCAPPED 15.7M id_train (20 datasets x ~0.8-1.8M rows),
+                         # MEASURED analogue: `genepert` at `full` cost 188.8 cpu-h
+                         # per job = ~24 wall-h at 8 threads (cpu_util 33.5%), which
+                         # is why its own full override is also 2 days. This is the
+                         # padding critical path -- everything else runs beside it.
+    mem: "160GB"         # then 10,245 predicted fingerprints per dataset and a
+    threads: 16          # 20-model ensemble pass over the eval cells. The means
+    partition: cpu_himem  # stream in 500k chunks, so mem is driven by the
+  scouter_zs_train_pds:  # CPU. With the training index capped (padding.train_index
+    time: "08:00:00"     # .scouter = id_train_cap10) this is ~24 batches/epoch, so even
+    mem: "64GB"          # at the CPU penalty the main grid measured (3-5x the 5.4 min
+    threads: 16          # GPU median) it lands well inside 8h -- the uncapped 18.5h run
+    partition: cpu  # was a data-volume problem, not a device one. GPU capacity is
+                         # stays off it. Peak was 100.9GB at 1.65M cells; 64GB is ample
+                         # at 49k.
+  scouter_zs_eval:       # 20-model ensemble over 201k x 10,245. Wider than the main
+    time: "12:00:00"     # grid's eval by ~50x in classes, hence the mem bump.
+    mem: "160GB"
+    threads: 16
+    partition: cpu
+  gears_zs_geneset:      # set intersection over gene2go (67,832 keys). Seconds.
+    time: "00:30:00"
+    mem: "16GB"
+    threads: 2
+    partition: cpu
+  gears_zs_prep_pds:     # PertData cell-graph build on the WIDENED 18,595-node pert
+    time: "24:00:00"     # graph. The node count roughly doubles vs the default graph,
+    mem: "180GB"         # which is where the extra memory goes.
+    threads: 16
+    partition: cpu
+  gears_zs_train_pds:    # MUST retrain: num_perts sizes nn.Embedding, so the widened
+    time: "24:00:00"     # graph changes the model shape. ON GPU: the bulk of the job is
+    mem: "80GB"          # 10,245 model.pred calls and they vectorise. MEASURED at small,
+    threads: 8           # GPU median was 24.5 min vs ~2.5 wall-h on 16 CPU threads (~6x);
+    partition: gpu_general    # scaling that 31x gives ~13 wall-h, comfortably inside this cap
+    gpu: 1               # partition). Deliberately gpu_general, NOT gpu: ctx7's
+                         # scgpt_train (12) + scgpt_eval_chunk (576) saturate
+                         # gpu, and these 20 should not queue behind them.
+                         # MEM 120GB -> 80GB, bounded by the ctx7 probe:
+                         # host RSS tracks TRAIN CELLS (76.0GiB at 225,876), and the
+                         # largest cap10 set here is XAtlas2025_HEK293T at 81,420 (0.36x),
+                         # so ~30-40GiB expected; 80GB would still hold the entire ctx7
+                         # peak. It also packs 2 per 2-GPU gpu_general node instead of 1.
+                         # TIME NOT re-derived: ctx7 predicted 1,128 perts in 76s, but on
+                         # the default graph -- the 18,294-node widened graph is exactly
+                         # what the ~13h projection above is about, and no probe covers it.
+  gears_zs_eval:
+    time: "12:00:00"
+    mem: "160GB"
+    threads: 16
+    partition: cpu
+  baselines_zs:          # random + neg_target only; both untrained. Reads the zs
+    time: "06:00:00"     # store + control means. Wide but shallow.
+    mem: "24GB"        # MEASURED peak 2.0GB (random+neg_target only)
+    threads: 8
+    partition: cpu
+  emb_nn_zs:             # streams delta centroids over the UNCAPPED 15.7M id_train
+    time: "24:00:00"     # (8,964 x 3,096 float64 accumulator = 222MB), then a
+    mem: "160GB"         # 10,245 x 8,964 cosine and a cosine scoring pass.
+    threads: 16
+    partition: cpu
+
+  # ---- supervised discriminative baselines (classifiers.smk) -----------------
+  # MEASURED on the documented fast settings, small fold_4 (ExPert
+  # baselines_f4.sbatch, 64 cores, step-level sacct -- its batch-step MaxRSS is ~7MB
+  # because the work ran under srun):
+  #   xgb 1:05:47 / 53.8GB   xgb_delta 0:49:24 / 54.0GB
+  #   logreg 0:07:01 / 35.1GB   logreg_delta 0:05:17 / 35.1GB
+  # fold_4 trains on 548k cells (fold_0: 491k), so this is the upper end.
+  xgboost:               # 32 threads here, not 64: gentler on the queue across 12
+    time: "06:00:00"     # folds. Hist scales sub-linearly, so expect ~1.5-2h/fold;
+    mem: "80GB"          # 6h covers 3x the 64-core time. mem = 1.5x the 54GB peak.
+    threads: 32
+    partition: cpu
+  xgboost_capped:        # Capped twin (classifiers.xgboost_capped.max_train_cells).
+    time: "06:00:00"     # Same base as `xgboost`: at `small` the 500k cap is above the
+    mem: "80GB"          # split's 490,943 train cells, so the two arms are identical
+    threads: 32          # there and this reproduces what small already ran with. A base
+    partition: cpu  # entry is REQUIRED even when only a jobs_by_size override
+                         # without it, which is why rule xgboost_capped looked itself up
+                         # under "xgboost" and so never saw its own ctx7 override.
+  linreg:                # 5-7 min at 64 cores; 16 threads -> ~20-30 min.
+    time: "02:00:00"
+    mem: "56GB"          # 1.6x the 35GB peak
+    threads: 16
+    partition: cpu
+
+# Per-size overrides, merged over `jobs.<name>` by common.smk _job(name, size).
+# Only the keys that change need listing. Keeps `small` cheap while `full`
+# (~9k perts, ~12M train + ~4.4M test cells streamed from the 112GB backed
+# source) gets the headroom it needs.
+jobs_by_size:
+  production_v010:
+    # ONE fingerprint dict on the full K562 GWPS (config/production_fp_gwps.yaml): 794,828 cells at cap 100.
+    # (Initially scaled from the ctx7 per-dataset MEASURED peaks (prep 49.2GB, deg 13.7GB, fit 12.3GB, on <=~190k
+    # GWPS cells) by ~4.2x cells, + headroom; right-sized below from the 2026-10-19 run.) On `cpu_general`:
+    # cpu was ~1,100 jobs deep on 2026-10-19 (chunks estimated 2 days out vs hours on cpu_general).
+    fp_pds_prep:          # MEASURED 2026-10-19: 130.8GB peak, 68 min
+      time: "03:00:00"
+      mem: "164GB"
+      threads: 8
+      partition: cpu_general
+    fp_pds_deg_chunk:     # MEASURED: 19.8GB peak, <=14 min per chunk (93 chunks)
+      time: "01:00:00"
+      mem: "25GB"
+      threads: 8
+      partition: cpu_general
+    fp_pds_fit_chunk:     # MEASURED: 19.6GB peak, <=15 min per chunk (93 chunks)
+      time: "01:00:00"
+      mem: "25GB"
+      threads: 8
+      partition: cpu_general
+    fp_pds_concat_dict:   # MEASURED: 1.4GB, 1 min
+      time: "00:30:00"
+      mem: "8GB"
+      partition: cpu_general
+  # ---- ctx7: MEASURED from the pre-launch smoke (2026-09-17) ------------------
+  # ctx7 previously had NO overrides, so every job ran on small-tuned entries
+  # against 4.4x the training cells and 5.8x the classes. The smoke caught the
+  # first casualty immediately.
+  ctx7:
+    xgboost:             # OOM-KILLED at 80GB after 3:21 in the smoke. small measured
+      time: "24:00:00"   # 53.8GB on 490,943 train cells; ctx7 fold_0 has 2,151,227
+      mem: "220GB"       # (4.4x) -> ~236GB by cells alone, plus ~20GB of per-class
+      threads: 32        # gradient/hessian (n x 1,157 float32) and a 26.6GB dense
+      partition: cpu_himem_general   # matrix. 220GB is this repo's declared max_mem, so
+                         # modelling one: set classifiers.xgboost.max_train_cells
+                         # (currently 0 = all cells) rather than chasing memory.
+                         # Time also raised: 1,157 classes = 1,157 trees PER ROUND
+                         # x 150 rounds, vs 200 at small.
+    xgboost_capped:      # MEASURED (500k cells / 1,157 classes / fold_0):
+      time: "16:00:00"   #   MaxRSS 81.5GiB, FLAT from round 0 through round 50; 231-236
+      mem: "160GB"       #   s/round -> 150 rounds = ~9.8h of fit plus 4min load. 16h is
+      threads: 32        #   ~1.6x that, and early stopping (20) can only shorten it.
+      partition: cpu   # That peak was recorded against the UNCAPPED arm's 220GB on
+                         # "xgboost" until the key was fixed -- so the entry below had
+                         # never once applied. 160GB (~156GiB) is 1.9x the observed peak and fits
+                         # `cpu` (67 nodes at 251GB, 18 at 503GB), which schedules
+                         # far better than cpu_himem_general's 4.
+                         # SUPERSEDED ESTIMATE: small ran 490,943 cells / 200 classes at
+                         # 53.8GB; scaling the dense ctrl_delta (~6.2GB at 500k cells) plus
+                         # per-class gradient+hessian (500k x 1,157 x 4 x 2 = 4.6GB) gave
+                         # ~60GB -- 1.4x low.
+                         # ESTIMATE IT REPLACES: small ran 490,943 cells / 200 classes at
+                         # 53.8GB; this is 500k cells / 1,157 classes, so the dense
+                         # ctrl_delta is the same ~6.2GB and the extra is per-class
+                         # gradient+hessian (500k x 1,157 x 4 x 2 = 4.6GB) -> ~60GB.
+    linreg:              # RE-MEASURED: passed in 1:38:03 with a peak of 97.4GB (it had
+      time: "08:00:00"   # OOM-killed at the 56GB base). 128GB = ~30% headroom; the
+      mem: "128GB"       # earlier 180GB was interpolated and over-asked by 1.8x.
+      threads: 32        # Runtime 1:38 also makes the 24h cap unnecessary.
+      partition: cpu
+    fp_pds_prep:         # RE-MEASURED: passed in 7:46 with a peak of 49.2GB (it had
+      time: "08:00:00"   # OOM-killed at the 24GB base). 64GB = ~30% headroom over the
+      mem: "64GB"        # measured peak, which matters because this is 216 jobs at
+      threads: 8         # ctx7 (12 folds x 18 datasets) -- the earlier 128GB was sized
+      partition: cpu   # off an interpolation and over-asks by 2.6x, which on
+                         # 64GB does not need a himem node.
+    gears:               # MEASURED (ctx7 fold_0 XAtlas2025_HEK293T, A100):
+      time: "08:00:00"   #   225,876 train cells -> 6.2GB cell_graphs.pkl; COMPLETED in
+      mem: "110GB"       #   2:15:34 (load+train 2:12, predicting 1,128 perts took 76s);
+      threads: 8         #   host MaxRSS 76.0GiB (70.2GiB of it by the end of unpickling).
+      partition: gpu_general  # Both scale with a dataset's TRAIN CELLS, and HEK293T
+      gpu: 1             # K562_gwps 1.07x. Default 110GB (~107GiB) covers gwps at ~81GiB
+      by_dataset:        # (1.3x); Zhuang2026 projects to ~125GiB, so it gets its own
+        Zhuang2026:      # 180GB and can only land on the 512GB gpu nodes.
+          mem: "180GB"   # 8h is ~2.2x Zhuang's projected 3.6h. Was 24h, which only
+                         # hurt backfill across ~230 GPU jobs. Keeping the default
+                         # at 110GB rather than 180GB matters for packing: 4 per 512GB
+                         # node vs 3. Only VRAM depends on the device; the 18.6k-node
+                         # pert graph at hidden=64 fits an A100/H100 easily.
+                         # PARTITION: gpu_general, leaving gpu (16 GPUs) to scGPT's
+                         # 12 train + 576 eval jobs. gpu_general is 134 GPUs: 14 nodes of 4xH100
+                         # at 1TB and 13 of 4xA100 at 503GB (4 of these jobs each), plus
+                         # 13 of 2xA100 at 188GB (1 each; Zhuang's 180GB still fits).
+                         # H100-safe: the gears env is torch 2.5.1+cu124, compiled for
+                         # sm_90. gpu_general uses a different account than `gpu`
+                         # (set per class in config/site.yaml).
+    gears_prep:          # MEASURED ctx7 peak 35.2GB against a 36GB base (97%).
+      time: "12:00:00"   # Base raised to 64GB too, since gears.smk previously looked
+      mem: "96GB"        # this up WITHOUT a size, so an override silently did nothing
+      threads: 16        # (now fixed -- both gears rules are size-aware).
+      partition: cpu
+    scgpt_eval_chunk:    # ONE job per (fold, split) at ctx7 (scgpt_chunks.ctx7 = 1), so
+      time: "24:00:00"   # each covers all 1,157 candidates: projected 6-14h for id_test
+                         # (see config.yaml scgpt_chunks). 24h keeps the job BELOW the
+                         # task yaml's deadline_hours (35), so an overrun fails loudly --
+                         # an eval that hits the deadline breaks out of its split and can
+                         # leave a truncated logits.h5 that looks complete. Mem stays at
+                         # the 96GB base: centroids are 1,157 x 3,978 float64 (37MB) and
+                         # eval blocks are capped at 25k cells.
+    scgpt_train:         # MEASURED: still RUNNING at 9:20 against a 12h base cap, i.e.
+      time: "24:00:00"   # under 3h of headroom on a first probe. ctx7 sets
+      mem: "140GB"       # train_steps_per_epoch: 2500 vs small's 500 (5x), so the cap
+      threads: 8         # that sufficed at small is marginal here. gpu allows
+      partition: gpu   # 2 days; 24h leaves real room without hoarding a GPU.
+      gpu: 1
+    # --- INTERPOLATED, not measured --------------------------------------------
+    # The smoke probed 12 of ~25 ctx7 rules and 3 OOM'd -- every one where the
+    # small-tuned base was tight. The rules below were NOT probed (they sit behind
+    # prep/train in the DAG) but share the same base->full gap, so they are sized by
+    # linear interpolation on the cell ratio (ctx7 = 4.08x small, full = 29.1x) plus
+    # headroom. [CHECK] Replace with measured peaks after the first ctx7 run --
+    # utils/slurm_costs.py records them.
+    fp_pds_deg_chunk:
+      time: "08:00:00"
+      mem: "32GB"        # MEASURED over 13 ctx7 chunks: peak 13.7GB. The interpolated
+      threads: 8         # 64GB over-asked ~5x, and this rule runs 1,884 times at
+      partition: cpu   # ctx7 -- over-asking there is a real throughput tax on a
+    fp_pds_fit_chunk:
+      time: "08:00:00"
+      mem: "32GB"        # MEASURED over 13 ctx7 chunks: peak 12.3GB. The interpolated
+      threads: 8         # 64GB over-asked ~5x, and this rule runs 1,884 times at
+      partition: cpu   # ctx7 -- over-asking there is a real throughput tax on a
+    fp_ens_eval_ds_chunk:
+      time: "08:00:00"
+      mem: "128GB"
+      threads: 8
+      partition: cpu
+    fp_merge_eval_chunk:
+      time: "08:00:00"
+      mem: "128GB"
+      threads: 8
+      partition: cpu
+    fp_ens_concat:
+      time: "06:00:00"
+      mem: "96GB"
+      threads: 8
+      partition: cpu
+    fp_merge_concat:
+      time: "06:00:00"
+      mem: "96GB"
+      threads: 8
+      partition: cpu
+    collect:             # MEASURED (264 files, 13 methods + gears
+      time: "03:00:00"   # partial): 52m42s wall, peak 7.8GiB. Files are streamed one at
+      mem: "32GB"        # a time and freed, so memory tracks the LARGEST single file
+      threads: 8         # (128,288 x 1,157 float32 = 566MB), not the 155GB total read.
+      partition: cpu   # The 1h BASE would have timed out at ~80% through -- and
+                         # the whole run's result with it. 3h is 3.4x measured.
+    cellot_pert_chunk:   # MEASURED over 2,754 ctx7 chunks: p50 55min,
+      time: "12:00:00"   # p90 1:36, p99 2:53 -- but a thin tail runs much longer, and
+                         # the 4h BASE killed 4 of them (0.15%), which under fail-fast
+                         # stopped submission 10h into the run and left the queue
+                         # draining for 3 days. 33 more finished between 70% and 101%
+                         # of the 4h cap (worst 04:01:21), so the tail is real, not a
+                         # one-off. Each chunk trains 25 perturbations x 5,000 iters, so
+                         # runtime is set by WHICH perts land in the chunk -- not the
+                         # dataset, and not something by_dataset can target (the 4
+                         # failures hit 4 different datasets in 3 different folds).
+                         # 12h is ~4x p99. Mem stays 24GB: no OOM in 2,754 jobs.
+    cellot_eval:
+      time: "12:00:00"
+      mem: "64GB"
+      threads: 16
+      partition: cpu
+    gears_ens_eval:
+      time: "12:00:00"
+      mem: "96GB"
+      threads: 16
+      partition: cpu
+    scouter_ens_eval:
+      time: "12:00:00"
+      mem: "96GB"
+      threads: 16
+      partition: cpu
+    expert_logits:       # MEASURED ctx7 peak 178,407,060K = 170.1GB against a 200GB
+      time: "08:00:00"   # request (85%) in 13:05. Too close for 12 folds -- the full
+      mem: "220GB"       # DB is loaded UNBACKED, so the peak scales with the store,
+      threads: 8         # not the fold. Moved to himem for the headroom.
+      partition: cpu_himem_general
+  # Padding: collect loads EVERY arm's logits over a 10,245-class space. Even the
+  # cheap subset is ~28GB of logits (6 arms x 4.6GB) and the full one ~37GB, against
+  # the base rule's 64GB -- which also has to hold the scoring matrices on top.
+  zs_f4:
+    collect:
+      time: "04:00:00"
+      mem: "220GB"
+      threads: 16
+      partition: cpu_himem
+  full:
+    genepert:            # memory stays modest (chunked scoring), but the per-pert
+      time: "2-00:00:00" # streaming I/O over the 112GB backed source is the long
+      mem: "128GB"       # pole — give it a long-queue partition. VALIDATE on one
+      partition: cpu_long   # fold before launching all 6 (measure real time).
+    # fingerprint @ full. Everything stays on cpu (avoid the 5-node himem
+    # bottleneck): cpu has 67 nodes @257GB + 18 @515GB, so even the heavy
+    # singletons fit. All values are STARTING points — an OOM'd job reruns alone.
+    fp_prep:             # realize + SCT capped train cells. PROBED on full fold_0
+      time: "08:00:00"   # (cap 500 → 940k cells): MaxRSS 320GB, elapsed 3:54h,
+      mem: "450GB"       # train_obj.rds 28GB. 450GB lands on cpu' 515GB nodes.
+      threads: 16
+      partition: cpu
+    fp_concat_eval:      # assembles the (perts x cells) logits.h5 in memory. ~104GB
+      time: "12:00:00"   # (ood) + chunk reads; 480GB fits cpu' 515GB nodes (if
+      mem: "480GB"       # it OOMs — only 6 jobs — bump or send to cpu_himem).
+      threads: 8
+      partition: cpu
+    # NOTE: option-2 deg/fit chunks now REALIZE their perts (uncapped) + apply the
+    # SCT model (vs the old load-train_obj probe), so these are generous estimates
+    # pending the first full fold — an OOM'd chunk reruns alone (chunked by design).
+    fp_deg_chunk:        # realize ~90-pert slice's cells + apply SCT + FindMarkers
+      time: "08:00:00"
+      mem: "150GB"
+      partition: cpu
+    fp_fit_chunk:        # realize ~90-pert slice's cells + apply SCT + LearnDictionary
+      time: "08:00:00"
+      mem: "150GB"
+      partition: cpu
+    fp_eval_chunk:       # realize + SCT + per-cell susie on one eval slice (eval:500,
+      time: "24:00:00"   # ~5.8k cells). 48GB OOM'd every chunk: susie memory scales
+      mem: "128GB"       # with the number of PREDICTORS (perturbations), and full has
+      partition: cpu  # ~9k perts vs small's ~200 (45x) — so full needs MORE mem per
+      #                      chunk's MaxRSS to tune; raise eval chunk count if still tight.)
+    # ---- per-dataset fingerprint @ full ------------------------------------
+    # Biggest dataset ~1.46M train cells (~1/8 the fold), panels up to 15.5k genes.
+    # All cpu (257/515GB nodes), NOT himem — the point of per-dataset. Estimates
+    # (no full run yet); bump a rule if its chunks OOM, the DAG reruns just those.
+    fp_pds_prep:         # SCT-fit on one dataset's ≤1.46M-cell subsample. The big
+      time: "10:00:00"   # Marson folds (D3_Stim8hr/D3_Rest) OOM'd fold_2 at 240GB ->
+      mem: "480GB"       # himem. 515GB nodes fit; only the failed datasets re-run.
+      partition: cpu_himem
+    fp_pds_deg_chunk:    # MEASURED XAtlas peak 59GB, but Marson D4/D1 OOM'd at 72GB
+      time: "12:00:00"   # on fold_2 (denser DEGs) -> 160GB (still fits 192GB nodes).
+      mem: "160GB"
+    fp_pds_fit_chunk:    # MEASURED 50GB, but bump ahead of the same Marson datasets'
+      time: "08:00:00"   # fit (blocked behind prep/deg, would likely OOM at 64GB too).
+      mem: "128GB"
+    fp_ens_eval_chunk:   # 17 per-model realize+SCT+query, one at a time, + accumulator
+      time: "24:00:00"
+      mem: "160GB"
+    fp_ens_concat:       # full test-cells × ~9k-pert logit matrix (rbind in memory)
+      time: "06:00:00"
+      mem: "240GB"
+    fp_merge_eval_chunk: # 500 cell-chunks -> ~5.8k cells/chunk. OOM'd fold_2 at 175GB/
+      time: "04:00:00"   # 12c: full's union dict (~15k genes x 9k perts) is big, and the
+      mem: "175GB"       # classify forks per-cell -> GC copy-on-writes it per worker, so
+      threads: 4         # mem scales with cores. 4c cuts fork COW ~3x; 5.8k cells @ 4c is
+      partition: cpu_short   # ~20min, well under cpu_short's 4h. 1 merged dict/chunk (scalable).
+    fp_merge_concat:     # assemble 2.9M cells x ~9k perts logits (~104GB float in mem)
+      time: "06:00:00"
+      mem: "240GB"
+      threads: 8
+      partition: cpu
+    # ---- scouter @ full (only run on small before) --------------------------
+    scouter_train:       # deep low-mem surgery in train.py: BalancedDataset holds a
+      time: "1-00:00:00" # REFERENCE to the parent CSR (no perturbed-subset copy) and
+      mem: "470GB"       # densifies per batch, and the full ScouterData.adata is freed
+      threads: 8         # right after the train/val slice — cutting ~3 in-memory copies
+      partition: gpu_bigmem   # of the 12M-cell matrix (~180GB each → 500GB+ OOM) down to ~one.
+      gpu: 1             # usable ~473GB), NOT base 192G: gpu_bigmem = GPU nodes with ~500GB
+                         # host RAM (a node constraint, set in config/site.yaml).
+    scouter_eval:        # predict.py rebuilds the train+val+ctrl fixture (same
+      time: "12:00:00"   # shared-gene subset load+merge as train) to get the model's
+      mem: "470GB"       # gene space, so it peaks like scouter_train (~440GB) → a 515GB
+      threads: 40        # cpu node. CPU-only (no GPU); scores test cells by cdist
+      partition: cpu # to per-pert μ over the 3788 shared genes.
+    # ---- cellot @ full ------------------------------------------------------
+    # cellot_ae/cellot_pert do NOT scale with size (AE on the fixed 180k controls;
+    # per-pert OT is batched + lazy) — base resources hold. perts + eval scale:
+    cellot_perts:        # list ~9k perts by reading full's 18M-row obs (backed) —
+      time: "02:00:00"   # base 30min timed out at full.
+      mem: "16GB"
+      partition: cpu
+    cellot_eval:         # score a split's cells against ALL ~9k per-pert models
+      time: "12:00:00"
+      mem: "200GB"
+      partition: cpu
+    cellot_ae:           # per-dataset AE on full's biggest dataset's controls
+      time: "12:00:00"   # (small peaked ~10GB; full ~1/8 of 180k ctrls + wider panel)
+      mem: "48GB"
+    # ---- gears @ full (per-dataset) -----------------------------------------
+    # ESTIMATES pending a full dataset measurement — base (small) peaked ~30GB for
+    # both prep and train; full's biggest screen (~8k perts, ~1.5M cells) builds a
+    # larger cell_graphs, so give headroom. Still far under the old global 160GB.
+    gears_prep:          # build the biggest dataset's cell_graphs at full
+      time: "12:00:00"
+      mem: "96GB"
+    gears:               # GPU train on the biggest dataset at full
+      time: "12:00:00"
+      mem: "120GB"
+    gears_ens_eval:      # stream full source + (cells x ~9k-pert) matrix
+      time: "12:00:00"
+      mem: "200GB"
+    fp_ens_eval_ds_chunk:  # MEASURED peak RSS 2026-07-07: median 154GB, p90 191, split by
+      time: "04:00:00"     # dataset. LIGHT datasets peak <=161GB, so run them at 175GB on
+      mem: "180GB"         # the `cpu_short` partition's ~990-node 192GB pool (chunks run 17-38min,
+      threads: 12          # well under cpu_short's 4h cap) — lifts parallelism from ~28 (all
+      partition: cpu_short     # queued for scarce 257GB nodes) to hundreds. HEAVY datasets
+      by_dataset:
+        # heavy (peak 186-200GB) -> cpu 257GB nodes, 200GB, 24h. Anchor = one spec.
+        Marson2025_D1_Rest:          &fp_ev_heavy {mem: "200GB", partition: cpu, time: "1-00:00:00"}
+        Marson2025_D1_Stim8hr:       *fp_ev_heavy
+        Marson2025_D1_Stim48hr:      *fp_ev_heavy
+        Marson2025_D4_Rest:          *fp_ev_heavy
+        Marson2025_D4_Stim8hr:       *fp_ev_heavy
+        XAtlas2025_HEK293T:          *fp_ev_heavy
+        XAtlas2025_HCT116:           *fp_ev_heavy
+        ReplogleWeissman2022_rpe1:   *fp_ev_heavy
+        ReplogleWeissman2025_Jurkat: *fp_ev_heavy
+        ReplogleWeissman2025_HepG2:  *fp_ev_heavy
+    # ---- scouter @ full (per-dataset) — ESTIMATES pending measurement ---------
+    scouter_train_pds:   # GPU train on the biggest dataset's cells at full (only
+      time: "1-00:00:00" # D's cells now, not the 12M-cell global merge that hit 892GB)
+      mem: "120GB"
+    scouter_ens_eval:    # stream full source + (cells x ~9k-pert) matrix
+      time: "12:00:00"
+      mem: "200GB"

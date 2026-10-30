@@ -1,0 +1,11 @@
+scouter-learn
+anndata
+scanpy
+h5py
+pyyaml
+torch==2.5.1
+scipy
+scikit-learn
+numpy
+pandas
+tqdm

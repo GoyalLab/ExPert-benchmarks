@@ -1,0 +1,27 @@
+# Task config for the `ctx7` size (1,157 perturbations, 2.74M cells). train.py /
+# predict.py resolve source_h5ad from metadata.json's source_path unless
+# source_h5ad is set here.
+data:
+  ctrl_h5ad: null        # set by the pipeline: --ctrl-h5ad <config ctrl_h5ad>
+  embedding_path: null   # set by the pipeline: --genept-path <config scouter_gene_embeddings>
+  condition_col: perturbation
+  ctrl_label: control
+
+training:
+  # See small.yaml: larger batch amortizes Scouter's per-batch CPU overhead,
+  # which is the wall-clock bottleneck (not GPU compute).
+  batch_size: 2048
+  epochs: 40
+  patience: 3
+  learning_rate: 1.0e-3
+
+prediction:
+  n_pred: 300
+  seed: 24
+
+# Scouter densifies the full cell x gene matrix into RAM during .train(), so peak
+# memory scales with the PER-DATASET split size. ctx7 trains one model per dataset
+# on 269..1134 perturbations (vs small's 70..198) over 4.1x the cells, so it sits
+# between small's 120GB and full's 400GB.
+slurm:
+  train_mem: 250GB

@@ -1,0 +1,48 @@
+# Site overlay for ExPert-benchmarks. Copy to config/site.yaml (git-ignored) and edit.
+# run.sh layers it over config/config.yaml automatically; for a bare snakemake call,
+# pass it yourself:
+#   snakemake ... --configfile config/config.yaml config/site.yaml
+# Keys are deep-merged, so set only what differs from config/config.yaml.
+
+# ---- Data (outputs of ExPert-data) -----------------------------------------
+splits_root: /path/to/store_out/<recipe_hash>/splits
+ctrl_h5ad:   /path/to/store_out/<recipe_hash>/database_ctrl.h5ad
+
+# ---- Outputs ---------------------------------------------------------------
+results_root:          /path/to/benchmarks/results            # all methods' logits.h5
+expert_fullpanel_root: /path/to/benchmarks/results_fullpanel  # ExPert full-panel export
+
+# ---- ExPert (trained elsewhere, scored here) -------------------------------
+expert_models_root: /path/to/models/folds        # <root>/ExPert_fold<N>/run_0/...
+expert_repo:        /path/to/ExPert          # clone of github.com/GoyalLab/ExPert
+expert_python:      /path/to/envs/expert/bin/python3
+
+# ---- Method resources ------------------------------------------------------
+scgpt_pretrained_model:   /path/to/scGPT_human   # best_model.pt + vocab.json + args.json
+genepert_gene_embeddings: /path/to/gene_embeddings.npz
+scouter_gene_embeddings:  /path/to/GenePT_gene_protein_embedding_model_3_text.pickle
+scgpt_splits_root:
+  ctx7: /path/to/scgpt_padded_ctx7/splits        # utils/scgpt_pad_targets.py output
+
+# ---- Unseen-perturbation (padding) mode ------------------------------------
+padding:
+  eval_source:     /path/to/store_out/<recipe_hash>/database_perturbed_zs.h5ad
+  splits_root:     /path/to/benchmarks/results_zs_splits
+  results_root:    /path/to/benchmarks/results_zs
+  expert_model_pt: /path/to/models/folds/ExPert_fold4/run_0/config/ExPert_v0/model/model.pt
+
+# ---- SLURM -----------------------------------------------------------------
+# config/resources.yaml names LOGICAL partition classes; map each to a real partition
+# and account here (constraint is optional: an sbatch --constraint node feature).
+# A class left out is passed through as the partition name, with no account.
+slurm:
+  partitions:
+    cpu:               {partition: <cpu_partition>,        account: <account>}
+    cpu_himem:         {partition: <himem_partition>,      account: <account>}
+    cpu_long:          {partition: <long_partition>,       account: <account>}
+    cpu_short:         {partition: <short_partition>,      account: <account>}
+    cpu_general:       {partition: <cpu_partition>,        account: <account>}
+    cpu_himem_general: {partition: <himem_partition>,      account: <account>}
+    gpu:               {partition: <gpu_partition>,        account: <account>}
+    gpu_general:       {partition: <gpu_partition>,        account: <account>}
+    gpu_bigmem:        {partition: <gpu_partition>,        account: <account>, constraint: <feature>}

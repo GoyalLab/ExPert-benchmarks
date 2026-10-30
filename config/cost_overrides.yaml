@@ -1,0 +1,16 @@
+# Measured replacements for sacct-booked costs that don't reflect the method itself.
+# Applied at plot time by workflow/scripts/analysis/cost.py::apply_overrides (cost plots)
+# and utils/plot_scaling.py.  Layout: method -> stage -> column -> {size: value}.
+#
+# ExPert eval: the booked runs read the full 157GB training store UNBACKED only to
+# register it with the model (MaxRSS ~181GB). run_expert_logits.py --no-model-adata
+# (now the pipeline default) scores the same cells without it; logits are identical
+# (small bit-identical, ctx7 max|diff| 5e-6, argmax agreement 100%).
+# Measured 2026-09-30, fold_0, 8 CPU cores:
+#   small 10m19s / 20.3 GiB,  ctx7 11m01s / 20.6 GiB.
+# cpu_hours = 12 folds x 8 cores x measured wall (the booked rows cover only the folds
+# that ran through the pipeline: small 5 jobs, ctx7 11).
+ExPert:
+  eval:
+    max_ram_GB: {small: 20.3, ctx7: 20.6}
+    cpu_hours:  {small: 16.5, ctx7: 17.6}

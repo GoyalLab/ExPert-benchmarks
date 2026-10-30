@@ -1,0 +1,408 @@
+# ExPert-benchmarks — main config.
+# Run from the repo root:
+#   mamba activate ExPert
+#   snakemake -n --configfile config/config.yaml                 # dry run
+#   snakemake --profile profiles/slurm --configfile config/config.yaml <targets>
+
+# ---- Paths -----------------------------------------------------------------
+# Every path below is a repo-relative DEFAULT. Point them at your own data with a
+# site overlay: copy config/site.example.yaml -> config/site.yaml (git-ignored);
+# run.sh layers it on automatically.
+#
+# Canonical split data (built by ExPert-data).
+# Each <size>/ has metadata.json (source_path, context_col, cls_col) + fold_*/.
+splits_root: data/store/splits
+ctrl_h5ad:   data/store/database_ctrl.h5ad
+# Where this repo writes logits + metrics (repo-relative; gitignored).
+results_root: results/benchmarks
+
+# ---- Benchmark grid --------------------------------------------------------
+sizes:   [small, ctx7]                 # ctx7 = 1,157 perts / 2.74M cells (see docs)
+
+# Which recall@k flavour the PLOTS and the method ranking report. Both are always
+# computed and both land in all_metrics.csv / weighted_metrics.csv -- this only picks
+# the one that is shown.
+#   balanced (default) : mean of the per-class recalls
+#   cells              : pooled over cells, so classes with more cells count for more
+# They diverge sharply on ood_test, which carries the natural class distribution: on
+# fold_0, xgboost reads 2.72x and linreg 1.87x higher under `cells` than under
+# `balanced`, while ExPert moves 1.19x. `accuracy` stays cell-pooled either way (that
+# is what accuracy means) and `macro_f1` is already class-balanced.
+recall_mode: balanced
+# Per-dataset is the DEFAULT for methods that are single-dataset by design (all of
+# cellot/scGPT/scouter/GEARS/genepert/fingerprint per their papers): train one model
+# per dataset, evaluate dataset-blind (score every cell vs every model, ensemble).
+# `fingerprint_perdataset` IS the fingerprint here; the shared-genes global fingerprint
+# is kept as opt-in code only (dropped from the default run — not two versions).
+# scgpt TEMPORARILY OUT: its 12 scgpt_train jobs are already climbing the queue from
+# a previous controller. Dropping it from `methods` just stops the `all` rule asking
+# for scgpt outputs, so a new controller neither resubmits nor cancels them -- they
+# finish on their own and each records its own .snakemake/metadata entry (cluster
+# jobs are self-contained snakemake invocations). Put `scgpt,` back once they're done
+# and it resumes at scgpt_eval_chunk without retraining. method_splits keeps its
+# scgpt entry -- that's just a lookup table.
+# xgboost_capped (max_train_cells 500k), NOT plain xgboost: the uncapped arm died in
+# dense ctrl_delta prep at 78.1GB and its fit is ~15-18h (1,157 trees/round x 150
+# rounds). The capped arm is the default; `xgboost` stays defined so the uncapped
+# fold_0 result remains comparable.
+methods: [ExPert, scouter, scgpt, baselines, fingerprint_perdataset, fingerprint_merged, cellot, gears, genepert, xgboost_capped, linreg]
+# Splits each method emits logits for (collect_results scores these). Every
+# method writes logits.h5 (collect still also reads .csv for legacy/reused runs).
+method_splits:
+  scouter:     [id_test, ood_test]
+  scgpt:       [id_test, ood_test]
+  baselines:   [id_test, ood_test]
+  fingerprint_perdataset: [id_test, ood_test]
+  # merged (combined-weights) fingerprint — reuses the SAME per-dataset dicts the
+  # ensemble builds, so running both only adds its own eval chunks + concat.
+  fingerprint_merged: [id_test, ood_test]
+  # `fingerprint` (shared-genes) is NOT in the methods list (per-dataset is the
+  # default), but its rules are still defined, so keep its splits entry for the
+  # FP_SPLITS lookup in fingerprint.smk. Harmless — method_splits is just a table.
+  fingerprint: [id_test, ood_test]
+  cellot:      [id_test, ood_test]
+  gears:       [id_test, ood_test]
+  ExPert:      [id_test, ood_test]
+  genepert:    [id_test, ood_test]
+  xgboost:     [id_test, ood_test]
+  # registered so method_splits resolves it; deliberately NOT in `methods` above --
+  # request its logits path explicitly to run the capped-vs-uncapped comparison.
+  xgboost_capped: [id_test, ood_test]
+  linreg:      [id_test, ood_test]
+# `baselines` is one rule that emits these variants (each a separate method dir
+# baseline_<v>/ that collect_results scores independently).
+# centroid_notarget = centroid with each perturbation's OWN target gene removed from
+# its comparison. Measured on ctx7/fold_0: no leak (splits disjoint by row and cell
+# name, no held-out dataset in train); the target gene is worth -33% (id) / -37% (ood)
+# balanced recall@1 on the 275 classes whose target is in the panel, and ~nothing on
+# the other 882 -- so most of centroid's strength is the downstream response. Keep
+# BOTH: the gap is the finding, and `centroid` sees the same inputs as every method.
+baseline_variants: [random, prior, neg_target, centroid, centroid_notarget]
+
+# ---- ExPert (already-trained models, scored not trained here) ---------------
+# Models trained on the `full` splits; the rule queries the BENCHMARK's cells
+# through each one. Fold numbers do NOT correspond between the split spaces, so
+# workflow/rules/common.smk:expert_fold_map pairs them by HELD-OUT DATASET SET and
+# skips benchmark folds no model is safe for (small fold_3: D1+HCT116 -- no model
+# held out both). Measured on fold_4: 84% of small's id_test cells are in the
+# model's own id_train and are excluded as leakage; ood_test is unaffected.
+expert_models_root: data/models/folds
+expert_model_pattern: "ExPert_{model_fold}/run_0"
+expert_model_split_size: full
+expert_repo: ../ExPert
+expert_python: python3          # interpreter of an env with ExPert installed
+# head A = cosine(z_shared, class anchors). These models have cls_head_weight 0.0,
+# so the classifier head (H) is untrained and at chance.
+expert_head: A
+# The full-panel (~9k-class) export goes OUTSIDE the collected results root on
+# purpose: collect unions class names across methods and pads the others with
+# -inf, which would deflate every method's macro-F1.
+expert_fullpanel_root: results/fullpanel
+
+# ---- Supervised discriminative baselines (xgboost, linreg) ----------------
+# Trained directly on cell -> perturbation (workflow/methods/classifiers/
+# run_classifier.py, a port of ExPert/expert/benchmarks/xgboost.py).
+# Defaults = the DOCUMENTED small-200 config (ExPert slurm/xgb_panels_fast,
+# as run in slurm/baselines_f4.sbatch):
+#   normalisation: CPM (target 1e6) -> log1p, all 3096 panel genes; all-zero genes
+#     within a split -> NaN (xgboost) / 0 (linreg).
+#   ctrl_delta: each cell minus its OWN dataset's control mean, same CPM+log1p --
+#     the "_delta" arms, which baselines_f4 calls the like-for-like version (the
+#     input ExPert gets, and what centroid / neg_target / cellot use). Measured on
+#     fold_4 it lifts logreg OOD recall@5 0.058 -> 0.095 and xgb ID 0.280 -> 0.312
+#     (class-macro, script's own scoring). Set false for the uncentred arms.
+#   xgboost: 150 rounds / depth 4 / lr 0.2 / colsample 0.3 / subsample 0.5 / 128
+#     bins. The script's own 500 / depth 6 is far slower: 200 classes = 200 trees
+#     PER ROUND. On fold_4 early stopping (20) never triggered -- all 150 rounds ran.
+#   max_train_cells: 0 = all id_train cells.
+classifiers:
+  normalisation: {target_sum: 1000000, log1p: true, ctrl_delta: true}
+  xgboost: {n_estimators: 150, max_depth: 4, lr: 0.2, early_stopping_rounds: 20,
+            colsample_bytree: 0.3, subsample: 0.5, max_bin: 128, max_train_cells: 0}
+  linreg:  {max_train_cells: 0}
+  # Capped twin of xgboost, scored as its own method so the two can be compared
+  # directly. MEASURED cause of the ctx7 OOM: it died in dense ctrl_delta prep at
+  # 78.1GB of 80GB, 33s after loading controls and BEFORE round 1 -- the 2,151,228 x
+  # 3,096 float32 matrix is 26.6GB before copies. 500k cells brings that to ~6.2GB,
+  # i.e. roughly small's footprint (measured 53.8GB peak at 490,943 cells).
+  # It does NOT fix the other ceiling: XGBoost builds one tree per class per round,
+  # so 1,157 classes x 150 rounds is ~5.8x small's 62-75s/round regardless of cell
+  # count -> still ~15h of fit. Capping cells is a memory fix, not a time fix.
+  xgboost_capped: {n_estimators: 150, max_depth: 4, lr: 0.2, early_stopping_rounds: 20,
+                   colsample_bytree: 0.3, subsample: 0.5, max_bin: 128,
+                   max_train_cells: 500000}
+
+# ---- Gene space for per-dataset models ------------------------------------
+# Each method trains one model per dataset (see `methods` above). This controls
+# WHICH GENES that model sees:
+#   all      - the full union panel of the source adata (DEFAULT). Correct for the
+#              current DB, whose union is only ~3k genes and whose per-dataset
+#              panels are hard zero-padded: every model then lives in ONE shared
+#              coordinate system, which is what makes per-dataset models directly
+#              comparable (and mergeable, cf. fingerprint_merged).
+#   dataset  - restrict each model to that dataset's own active-gene panel
+#              (varm feature_mask_per_dataset[:, D]). Was the default when panels
+#              were wide (~16k union) and training on the union was wasteful.
+#   shared   - intersect the active panels ACROSS datasets. Do NOT use on the
+#              current DB: the AND collapses to 1-2 genes.
+gene_panel: all
+
+# fingerprint chunk counts per size: `deg` = DEG-array length (FindMarkers over
+# perts, one slice per task), `fit` = dict-fit array length, `eval` = each
+# per-split eval array length. Chunking only partitions the work (concat
+# reassembles identically), so these are free to tune for parallelism / mem.
+# `eval` is sized so each chunk's realized cells stay under one standard CPU node
+# (188GB) — only fp_prep + fp_concat_eval go to himem (singletons). small uses
+# deg:1 (one DEG job ≈ the old in-process prep DEG).
+fingerprint_chunks:
+  small: {deg: 1,   fit: 5,    eval: 4}
+  # ctx7: 5.8x small's perturbations (deg/fit are per-pert) and 4.1x its cells.
+  ctx7:  {deg: 6,   fit: 30,   eval: 24}
+  # full eval fanned out hard: per-cell susie inference is the wall-clock pole, so
+  # many small chunks (≈5.8k cells each) → low mem (pack several per node) + high
+  # concurrency. deg/fit raised to 100 too, halving per-chunk realize+SCT-apply.
+  full:  {deg: 100, fit: 100,  eval: 500}
+
+# Per-dataset fingerprint: deg/fit chunk counts are sized PER DATASET as
+# ceil(dataset_train_perts / target) using perdataset_pert_counts.json, so the
+# ~880..8400-pert range at full each gets an appropriate fan-out (not one fixed
+# count). ~90 perts/chunk mirrors the shared path's full deg/fit=100 over ~9k.
+fingerprint_perdataset_perts_per_chunk: {deg: 90, fit: 90}
+
+# Per-dataset ENSEMBLE eval cell-chunk count (fp_ens_eval_ds_chunk fans out per
+# (dataset, cell-chunk)). SEPARATE from fingerprint_chunks.eval (the legacy shared
+# path) because the fan-out already parallelises 17-18x over datasets, so it needs
+# far fewer cell-chunks. small: 4 (measured — each ~13k cells / ~47GB / ~57min).
+# full: TUNE FROM A PROBE — full's panels are ~5x wider (≤15.5k vs ~3k genes) so
+# per-chunk memory is much higher per cell; 500 (17 ds x 500 x 2 = 17k jobs/fold)
+# is a placeholder. Measure one full dataset's eval chunk (mem+time) before a full
+# run and set this so each chunk stays ~one standard CPU node.
+fingerprint_perdataset_eval_chunks: {small: 4, ctx7: 24, full: 500}
+# merged-fingerprint eval cell-chunks: one merged dict so far fewer jobs than the
+# ensemble. MUST chunk even small — a single pass over 123k cells timed out at 4h on
+# `short` (classify is per-cell). small=8 (~15k cells/chunk, ~30min); full=500.
+fingerprint_merged_eval_chunks: {small: 8, ctx7: 48, full: 500}
+
+# Per-dataset cellot: train K perturbations' OT maps per job (cellot is per-pert;
+# per-dataset would be ~97k OT maps/fold at full, so chunk to keep job count sane).
+# A single OT fit is ~a couple minutes, so ~100/chunk ≈ a few-hour job.
+cellot_perts_per_chunk: 25
+
+# Cap on cells per (perturbation × dataset) for fp_prep's SCT-FIT SUBSAMPLE only.
+# Under option 2 (fit one SCT model on a subsample, apply to all cells in the
+# deg/fit chunks), the DICTIONARY uses every training cell regardless of this cap
+# — so there is no subsampling degradation, and the fit subsample just needs to
+# be large + representative. 500 keeps it near the nnz ceiling (per-pert cap
+# barely bites; the global 2^31 cap trims to ~940k, a fine uniform sample for
+# FITTING the NB model). Validated on small: option-2 macro-F1 matches joint-SCT.
+fingerprint_max_cells_per_pert:
+  small: 500
+  ctx7:  500
+  full:  500
+
+# scGPT per-perturbation eval-chunk count per size (parallel GPU eval jobs that a
+# concat hstacks). eval is O(n_perts), so scale this up with the perturbation
+# count (small ~123 perts, full/9k perts → many more chunks).
+scgpt_chunks:
+  small: 4
+  # ctx7: ONE job per (fold, split) -- 24 eval jobs, not 576. This is the only eval
+  # layout that has ever run: the canonical small eval was a manual scGPT run
+  # with NCHUNKS=1, and no scgpt_eval_chunk job or _eval_chunks dir has ever existed.
+  # Under classifier_readout, cost is NOT per eval cell (eval cells are capped anyway):
+  # it is a fixed per-job setup (store open, train centroids, control groups; ~1-2h at
+  # small whatever the split -- ood with 4.5x fewer forwards took LONGER than id) plus
+  # n_groups x n_candidates x 32 control-cell forwards. Chunking by candidate splits
+  # only the second part and re-pays the first in every chunk. Projected at ctx7 from
+  # the train probe (1.37s/step, 64 cells, 1,536 tokens -> ~1s per candidate profile at
+  # 3,978 tokens): id_test ~5.8h of profiles + setup, ~6-14h in all; ood_test 1-4h.
+  ctx7:  1
+  full:  30
+
+# scGPT reads a perturbation off a FLAG on its target gene's token, so a perturbation
+# whose target gene is absent from the expression panel has no token to flag and
+# get_candidate_perturbations() drops it: 882 of ctx7's 1,157 (275 survive), 147 of
+# small's 200. The collector then pads those columns back in, scoring scGPT on classes
+# it could never express. The fix is a padded COPY of the store carrying one extra
+# column per missing target -- REAL measurements spliced out of the 16,092-gene store
+# wherever it has them (ctx7: 437 of 882, so 712/1,157 become representable), Poisson
+# for the rest -- addressed through a SHADOW split set whose metadata.json source_path
+# points at that copy, because run_scgpt.sh takes --data-path from there. Built by
+# utils/scgpt_pad_targets.py --real-from. scGPT ONLY: every other method keeps the
+# canonical splits, and a size with no entry here is untouched.
+#
+# The Poisson columns are label-derived for TEST cells too, so the size's task yaml
+# MUST set prediction.score_n_genes to the real panel width (3,096 for ctx7) to keep
+# them out of every metric. Measured worth of that leak if they reach the cosine:
+# 2.8x recall@10 on small/fold_2.
+scgpt_splits_root:
+  ctx7: data/scgpt_padded_ctx7/splits
+
+# ---- Conda envs ------------------------------------------------------------
+# Each rule declares its env via a `conda: ../envs/<name>.yaml` directive, and
+# Snakemake (`use-conda: True` in the profile) builds + activates it. Pre-build
+# all of them once with `bash setup.sh`. No env paths live here.
+
+# scGPT pretrained checkpoint dir (best_model.pt + vocab.json + args.json).
+# Empty string => train from random init. Staged by the vendored .setup.sh.
+scgpt_pretrained_model: data/resources/scGPT_human
+
+# GenePert gene-embedding matrix (.npz with `embeddings` + `genes` arrays). The
+# method's only model input
+genepert_gene_embeddings: data/resources/gene_embeddings.npz
+
+# Scouter's GenePT gene table: a {gene: vector} pickle (GenePT gene + protein text
+# embeddings, model 3).
+scouter_gene_embeddings: data/resources/GenePT_gene_protein_embedding_model_3_text.pickle
+
+# ---- Padding mode: unseen-perturbation benchmark ---------------------------
+# Scope + all measured numbers: docs/padding_scope.md.
+#
+# Tests ExPert's graph padding — scoring perturbations with NO training cells —
+# against the forward models that can also express an unseen perturbation (those
+# conditioned on a transferable representation of the target gene).
+#
+# `zs_f4` is deliberately NOT in `sizes` above, so `rule all` and every other size
+# are unaffected. Drive it explicitly:
+#     snakemake metrics/zs_f4 --profile profiles/slurm --configfile config/config.yaml
+#
+# Leakage: the eval store's 10,245 perturbations are 100% DISJOINT from the 8,964
+# trained classes (they fell below the store recipe's min_cells_per_perturbation:
+# 50 and were routed to the zero-shot store), so no leak filter is needed at all —
+# unlike the main grid, where 84% of small/id_test sits in the model's own
+# id_train. zs_splits re-asserts the disjointness and fails hard if it ever breaks.
+padding:
+  size: zs_f4
+  # Snakemake job priority for every padding rule (default 0). Lets one controller
+  # drive `metrics/ctx7 metrics/zs_f4` without the ~30 padding jobs starving behind
+  # ctx7's ~24k at the profile's jobs:60 cap.
+  priority: 50
+  fold: fold_4                    # held out: K562 (Replogle K562 essential + gwps)
+  # EVAL cells: the zero-shot store. Same 3,096-gene union panel as the main store,
+  # so every per-dataset coordinate-system assumption carries over unchanged.
+  eval_source: data/store/database_perturbed_zs.h5ad
+  # TRAINING cells: the ordinary `full` split space (real cells, the 8,964 seen
+  # perturbations). Training source != eval source; that is the whole design.
+  train_size: full
+  # Pipeline-OWNED split space (the upstream store dir stays read-only).
+  # Kept separate from `results_root`: the padding logits are large (see below),
+  # so put these two on storage with room to spare.
+  splits_root: results/zs_splits
+  # SEPARATE results root. Two reasons, one structural and one practical:
+  #  * it removes every path overlap with the main grid, so the padding rules can
+  #    never be ambiguous with `gears_prep_pds` / `scouter_train_pds` / `genepert` /
+  #    `baselines` / `expert_logits` (all of which carry a {size} wildcard that
+  #    would otherwise match zs_f4) -- no existing rule needs editing;
+  #  * padding logits are ~8.2 GB each (10,245 classes), so keeping them out of
+  #    the collected tree stops `collect` on small/ctx7 from ever scanning them.
+  results_root: results/zs
+  # Cells per (DATASET, PERTURBATION) -- the same unit the upstream recipe uses
+  # (zs_eval_cap: 10), NOT per perturbation. Verified on the store: 70,182
+  # (dataset,pert) pairs at min 1 / median 10 / max 10, so the zs store is already
+  # stratified and this just thins it evenly.
+  #   cap 1 ->  69,203 cells (2.7 GB/method)    cap 3 -> 206,059 (8.1 GB)
+  #   cap 2 -> 137,845 cells (5.5 GB/method)    cap 10 -> 673,966 (26.6 GB, uncapped)
+  # 2 keeps ~14 cells per perturbation spread over its datasets at 5.5 GB per arm --
+  # enough for a per-class estimate while leaving the group-level view (below) as the
+  # primary readout.
+  eval_cap: 2
+  eval_cap_seed: 42
+  # Reporting. Absolute numbers on a ~9.9k-class space are tiny (chance = 1.0e-4), so
+  # the collector also reports:
+  #   group_by   : aggregate cells into (dataset, perturbation) groups and score the
+  #                group (mean log-prob over its cells) NEXT TO the per-cell number.
+  #                Group level is the primary readout; per-cell is kept because it is
+  #                what every other size reports.
+  #   over_random: express each metric as a multiple of the random floor, so "12x
+  #                chance" is legible where "0.0012" is not.
+  report:
+    group_by: [dataset, perturbation]
+    over_random: true
+  # Class space. `zs_only` (10,245 unseen perts, chance 9.8e-5) isolates the
+  # padding capability and is the primary result. `union` (8,964 + 10,245 = 19,209)
+  # is deployment-realistic but leaves every non-ExPert method -inf on the seen
+  # half, so read it as an ExPert-internal diagnostic, not a ranking.
+  class_space: zs_only
+  # Per-method TRAINING index — scope §2. Methods that only need per-perturbation
+  # MEANS stream the uncapped 15.7M id_train (build_pert_means is chunked, bounded
+  # memory), so they see exactly what the ExPert model saw and there is no budget
+  # confound in the comparison that carries the claim. Only cell-level methods
+  # that physically cannot ingest 15.7M cells get a capped index, and
+  # `train_cells_consumed` records it in the metrics.
+  train_index:
+    default:  id_train            # uncapped 15,732,785 cells
+    genepert: id_train
+    genepert_atoms: id_train
+    emb_nn:   id_train
+    baselines: id_train
+    # MEASURED, not assumed: on the uncapped index one dataset gets 1.65M cells =>
+    # 808 batches/epoch at 2.06 s/batch => 27.7 min/epoch => 18.5 h for 40 epochs,
+    # and the observed rate (9 epochs in ~6 h incl. validation) projected to ~27 h,
+    # i.e. past the 24 h wall. Early stopping (patience 3) had not fired by epoch 9.
+    # cap10 gives 49k cells/dataset -- still 1.6x what scouter gets at `small`, where
+    # it is the method's own designed scale -- and 24 batches/epoch => ~0.5 h.
+    # This is the same "capped out of necessity" case as gears, now demonstrated.
+    scouter:  id_train_cap10
+    scouter_atoms: id_train_cap10
+    gears:    id_train_cap10      # capped by necessity: GEARS builds per-cell graphs
+  methods: [ExPert, genepert, scouter, gears, emb_nn, baselines]
+  # The 20 datasets `full`/fold_4 trains on = the store's 22 minus the fold's two
+  # held-out K562 screens. Listed EXPLICITLY (not globbed/derived) so DAG
+  # construction needs no I/O over the 140GB training store; zs_splits re-derives
+  # the same list and fails loudly if config and data ever disagree.
+  train_datasets:
+    - Mali2026
+    - Marson2025_D1_Rest
+    - Marson2025_D1_Stim48hr
+    - Marson2025_D1_Stim8hr
+    - Marson2025_D2_Rest
+    - Marson2025_D2_Stim48hr
+    - Marson2025_D2_Stim8hr
+    - Marson2025_D3_Rest
+    - Marson2025_D3_Stim48hr
+    - Marson2025_D3_Stim8hr
+    - Marson2025_D4_Rest
+    - Marson2025_D4_Stim48hr
+    - Marson2025_D4_Stim8hr
+    - ReplogleWeissman2022_rpe1
+    - ReplogleWeissman2025_HepG2
+    - ReplogleWeissman2025_Jurkat
+    - Wong2026
+    - XAtlas2025_HCT116
+    - XAtlas2025_HEK293T
+    - Zhuang2026
+  # ExPert model to score (no training here). The padding fold maps straight to the
+  # same-numbered model fold: the zs perturbations are disjoint from EVERY model's
+  # training pool, so there is no leakage to guard against and no expert_fold_map
+  # search is needed.
+  expert_model_pt: data/models/folds/ExPert_fold4/run_0/config/ExPert_v0/model/model.pt
+  method_splits:
+    ExPert:    [zs_id, zs_ood]
+    genepert:  [zs_id, zs_ood]
+    scouter:   [zs_id, zs_ood]
+    gears:     [zs_id, zs_ood]
+    emb_nn:    [zs_id, zs_ood]
+    baselines: [zs_id, zs_ood]
+    genepert_atoms: [zs_id, zs_ood]
+    scouter_atoms:  [zs_id, zs_ood]
+  # Only the two floors that need NO training on the held-out perturbation.
+  # `centroid` and `prior` are excluded on purpose: both require observed cells
+  # for the perturbation, so they cannot express a single zs class.
+  baseline_variants: [random, neg_target]
+  # emb_nn: the control the whole claim rests on — graph padding reduced to one
+  # line. For unseen pert p, score cells with the signature of the SEEN
+  # perturbations nearest to p in ExPert's OWN embedding space, so prior knowledge
+  # is held fixed and only the model varies.
+  emb_nn:
+    variants: [nn1, knn]          # nn1 = nearest seen pert; knn = kernel-weighted
+    k: 10
+    tau: 0.05
+  # ExPert atoms as a drop-in embedding table (scope §12 "sharp test"): does
+  # ExPert's LEARNED class representation carry signal that the text embedding
+  # does not? Feeds the same simple models a different feature set.
+  expert_atoms:
+    tensor: cls_emb.embedding.weight   # (19,895 x 2,048), padded vocabulary
+    methods: [genepert_atoms, scouter_atoms]
+  # The atom arms are a FOLLOW-UP, not part of the headline table: flip this to true
+  # (or request their logits paths directly) once the main arms have landed. Keeping
+  # them out by default also keeps the primary metrics table readable.
+  include_atoms_arms: false

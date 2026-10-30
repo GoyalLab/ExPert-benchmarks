@@ -1,0 +1,29 @@
+# Conda spec for the scgpt rule's env. Kept in sync with
+# workflow/methods/scgpt/requirements.txt. Phase 1 builds .conda/scgpt from the
+# requirements via .setup.sh; this file is the source of truth for phase-4
+# `--use-conda` (where Snakemake manages the env itself).
+name: scgpt
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - torch==2.5.1
+      - torch_geometric==2.7.0
+      - anndata==0.11.1
+      - numpy==1.26.4
+      - pandas==2.2.3
+      - scipy==1.14.1
+      - h5py==3.12.1
+      - matplotlib
+      - tqdm
+      - pyyaml==6.0.2
+      - typing_extensions
+      # Fast attention: config sets use_fast_transformer=true and scGPT ships a
+      # flash_attn_compat shim (FA1/FA2). Without flash-attn it silently falls
+      # back to the slower pytorch transformer (same results). Prebuilt wheel
+      # matched to torch 2.5 / cu12 / cp310 / cxx11abiFALSE (avoids the source
+      # compile); einops is required by the FA2 masked path.
+      - einops
+      - https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abiFALSE-cp310-cp310-linux_x86_64.whl

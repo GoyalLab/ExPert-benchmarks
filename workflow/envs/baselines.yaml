@@ -1,0 +1,14 @@
+# Conda spec for the baselines rule (run.py): lightweight, CPU-only — just the
+# anndata/h5py/numpy stack. No torch.
+name: baselines
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - anndata
+      - h5py
+      - numpy
+      - pandas
+      - scipy

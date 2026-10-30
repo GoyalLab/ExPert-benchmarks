@@ -1,0 +1,21 @@
+# Conda spec for the genepert rule. Kept in sync with
+# workflow/methods/genepert/requirements.txt. CPU-only — GenePert is ridge
+# regression over gene embeddings (sklearn), no torch/GPU. setup.sh builds this
+# into .conda-envs/ via --conda-create-envs-only; this file is the source of
+# truth for phase-4 `--use-conda`.
+name: genepert
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - scikit-learn
+      - scanpy
+      - anndata
+      - h5py
+      - numpy
+      - pandas
+      - scipy
+      - matplotlib
+      - tqdm

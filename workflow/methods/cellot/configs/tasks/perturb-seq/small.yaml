@@ -1,0 +1,22 @@
+data:
+  path: null        # set by the pipeline: --config.data.path (split metadata source_path)
+  path_ctrl: null   # set by the pipeline: --config.data.path_ctrl (config ctrl_h5ad)
+  condition: perturbation
+  source: control
+  target: all
+  type: cell
+  # AND-intersection of the per-dataset active-gene masks. DISABLED: the current
+  # DB hard-zero-pads to 500 genes per dataset, so the intersection collapses to
+  # 1-2 genes. Moot on the per-dataset path (--config.data.dataset=D wins and uses
+  # D's own 500-gene panel), but left false so a run without --dataset can't
+  # silently train on ~1 gene. The full union panel is ~3.1k genes.
+  shared_active_genes_only: false
+dataloader:
+  batch_size: 256
+  shuffle: true
+
+datasplit:
+  name: precomputed
+  path: null   # set by the pipeline: --config.datasplit.path
+training:
+  share_controls: true

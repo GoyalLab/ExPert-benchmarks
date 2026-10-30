@@ -1,0 +1,72 @@
+# scGPT perturbation-prediction config — `ctx7` split (1,157 perturbations,
+# 2.74M cells: 5.8x small's label space, 4.1x its cells).
+#
+# Same schema as small.yaml (see comments there). Differences are scale: the
+# classifier readout costs one forward pass per candidate perturbation, so the
+# 5.8x larger label space — not the cell count — is what drives eval time here.
+data:
+  # PADDED control store (utils/scgpt_pad_targets.py --real-from). It carries the same
+  # 3,978 columns as the padded perturbed store this size trains on -- a 3,978-column
+  # model cannot consume a 3,096-column control file -- and control cells carry NO
+  # knockdown in the padded block (they are not perturbed), so the appended columns are
+  # pure background here: verified per-column means 2.256-2.302 on the small store.
+  ctrl_h5ad: null          # set by the pipeline (config ctrl_h5ad; padded copy auto-detected)
+  pretrained_model: null   # set by the pipeline (config scgpt_pretrained_model)
+
+model:
+  max_seq_len: 1536
+  embsize: 512
+  d_hid: 512
+  nlayers: 12
+  nhead: 8
+  n_layers_cls: 3
+  dropout: 0.0
+  use_fast_transformer: true
+
+training:
+  max_epochs: 15
+  batch_size: 64
+  early_stopping_patience: 10
+  learning_rate: 1.0e-4
+  # 5.8x the classes at the same steps/epoch would mean ~1/6 the gradient signal
+  # per perturbation, so scale the step budget with the label space.
+  train_steps_per_epoch: 2500
+  min_train_cells_per_perturbation: 25
+  amp: true
+
+prediction:
+  metric: cosine
+  eval_splits: [id_test, ood_test]
+  # ood_test is already capped at 10 cells per (dataset x perturbation) by
+  # benchmark_ood_cap, so the remaining eval cost is dominated by id_test, which
+  # is restricted from full's (~132k cells/fold). Cap it here rather than leaving
+  # the GPU job to time out: uniform subsampling of an already class-balanced
+  # split is unbiased (max bias 0.0009 at N=10k, measured on fold_0).
+  max_eval_cells_per_split: 25000
+  max_control_cells_per_group: 0
+
+  # Score on the REAL 3,096 genes only. The padded store has 3,978 columns; the 882
+  # appended ones exist so every perturbation has a token position to flag. 437 hold
+  # real measurements spliced from the 16,092-gene store, but the other 445 are
+  # Poisson(label) -- exactly 0 in the target's own cells and ~lambda_bg elsewhere, for
+  # TEST cells too -- so letting them reach the cosine hands the model its own label:
+  # measured 2.8x recall@10 on small/fold_2. Must equal the canonical panel width.
+  score_n_genes: 3096
+
+  # Reverse-direction readout: build one predicted profile per CANDIDATE perturbation
+  # from control cells, then rank the MEASURED cell against those. Without this, the
+  # legacy path builds a single prediction conditioned on the eval cell's TRUE label
+  # and ranks centroids against it, so the ground truth enters the prediction itself --
+  # which is what made the `small` top-k metrics look strong while F1 stayed near the
+  # floor. `small` was run in the legacy mode and is NOT comparable to these numbers;
+  # re-run its eval here (train is cached) before putting the two in one table.
+  classifier_readout: true
+  pred_control_cells: 32
+
+slurm:
+  # Between small (16h) and full (48h): 5.8x the candidates per scored cell, but
+  # eval cells are capped above, so the train side dominates the growth.
+  train_mem: 400GB
+  train_time: "36:00:00"
+  deadline_hours: 35.0
+  deadline_buffer_minutes: 30
